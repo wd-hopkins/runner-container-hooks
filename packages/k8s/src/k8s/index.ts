@@ -4,9 +4,9 @@ import { spawn } from 'child_process'
 import * as k8s from '@kubernetes/client-node'
 import tar from 'tar-fs'
 import * as stream from 'stream'
-import { WritableStreamBuffer } from 'stream-buffers'
 import { createHash } from 'crypto'
 import type { ContainerInfo, Registry } from 'hooklib'
+import { WritableStreamBuffer } from 'hooklib'
 import {
   getSecretName,
   JOB_CONTAINER_NAME,

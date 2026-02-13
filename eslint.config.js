@@ -17,7 +17,8 @@ module.exports = [
       },
       globals: {
         ...globals.node,
-        ...globals.es6
+        ...globals.es6,
+        BufferEncoding: 'readonly'
       }
     },
     plugins: {
