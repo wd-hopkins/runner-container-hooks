@@ -5,6 +5,11 @@ const globals = require('globals');
 const pluginJest = require('eslint-plugin-jest');
 
 module.exports = [
+  {
+    ignores: [
+      '**/lib/*'
+    ]
+  },
   eslint.configs.recommended,
   {
     files: ['**/*.ts'],

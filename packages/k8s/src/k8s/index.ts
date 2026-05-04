@@ -176,6 +176,8 @@ export async function createJobPod(
     mergePodSpecWithOptions(appPod.spec, extension.spec)
   }
 
+  await createService()
+
   return await k8sApi.createNamespacedPod({
     namespace: namespace(),
     body: appPod
@@ -240,6 +242,46 @@ export async function deletePod(name: string): Promise<void> {
     name,
     namespace: namespace(),
     gracePeriodSeconds: 0
+  })
+}
+
+export async function createService(): Promise<k8s.V1Service> {
+  const service = new k8s.V1Service()
+  service.apiVersion = 'v1'
+  service.kind = 'Service'
+
+  if (process.env.RUNNER_HOOK_RCE_ENABLED !== 'true') {
+    return service
+  }
+
+  const instanceLabel = new RunnerInstanceLabel()
+  service.metadata = new k8s.V1ObjectMeta()
+  service.metadata.name = `svc-${instanceLabel.value}-workflow`
+
+  service.spec = new k8s.V1ServiceSpec()
+  service.spec.selector = {
+    [instanceLabel.key]: instanceLabel.value
+  }
+  service.spec.ports = [
+    {
+      port: 80,
+      targetPort: 33333
+    }
+  ]
+
+  return await k8sApi.createNamespacedService({
+    namespace: namespace(),
+    body: service
+  })
+}
+
+export async function deleteService(): Promise<void> {
+  if (process.env.RUNNER_HOOK_RCE_ENABLED !== 'true') {
+    return
+  }
+  await k8sApi.deleteNamespacedService({
+    name: `svc-${new RunnerInstanceLabel().value}-workflow`,
+    namespace: namespace()
   })
 }
 
@@ -646,6 +688,27 @@ export async function createSecretForEnvs(envs: {
     namespace: namespace(),
     body: secret
   })
+  return secretName
+}
+
+export async function createAuthTokenSecret(token: string): Promise<string> {
+  const runnerInstanceLabel = new RunnerInstanceLabel()
+  const secretName = getSecretName()
+
+  const secret = new k8s.V1Secret()
+  secret.immutable = true
+  secret.apiVersion = 'v1'
+  secret.metadata = new k8s.V1ObjectMeta()
+  secret.metadata.name = secretName
+  secret.metadata.labels = {
+    [runnerInstanceLabel.key]: runnerInstanceLabel.value
+  }
+  secret.kind = 'Secret'
+  secret.data = {
+    'rce-auth-token': Buffer.from(token).toString('base64')
+  }
+
+  await k8sApi.createNamespacedSecret({ namespace: namespace(), body: secret })
   return secretName
 }
 

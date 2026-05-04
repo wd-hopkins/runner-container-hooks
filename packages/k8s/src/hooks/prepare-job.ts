@@ -15,7 +15,8 @@ import {
   waitForPodPhases,
   getPrepareJobTimeoutSeconds,
   execCpToPod,
-  execPodStep
+  execPodStep,
+  createAuthTokenSecret
 } from '../k8s'
 import {
   CONTAINER_VOLUMES,
@@ -34,6 +35,7 @@ import {
   JOB_CONTAINER_NAME
 } from './constants'
 import { dirname } from 'path'
+import { randomBytes } from 'crypto'
 
 export async function prepareJob(
   args: PrepareJobArgs,
@@ -47,13 +49,20 @@ export async function prepareJob(
 
   const extension = readExtensionFromFile()
 
+  const authToken = randomBytes(32).toString('hex')
+  const authTokenSecretName =
+    process.env.RUNNER_HOOK_RCE_ENABLED === 'true'
+      ? await createAuthTokenSecret(authToken)
+      : ''
+
   let container: k8s.V1Container | undefined = undefined
   if (args.container?.image) {
     container = createContainerSpec(
       args.container,
       JOB_CONTAINER_NAME,
       true,
-      extension
+      extension,
+      authTokenSecretName
     )
   }
 
@@ -153,21 +162,23 @@ export async function prepareJob(
     throw new Error(`failed to determine if the pod is alpine: ${message}`)
   }
   core.debug(`Setting isAlpine to ${isAlpine}`)
-  generateResponseFile(responseFile, args, createdPod, isAlpine)
+  generateResponseFile(responseFile, args, createdPod, isAlpine, authToken)
 }
 
 function generateResponseFile(
   responseFile: string,
   args: PrepareJobArgs,
   appPod: k8s.V1Pod,
-  isAlpine: boolean
+  isAlpine: boolean,
+  authToken: string
 ): void {
   if (!appPod.metadata?.name) {
     throw new Error('app pod must have metadata.name specified')
   }
   const response = {
     state: {
-      jobPod: appPod.metadata.name
+      jobPod: appPod.metadata.name,
+      authToken
     },
     context: {},
     isAlpine
@@ -221,11 +232,17 @@ export function createContainerSpec(
   container: JobContainerInfo | ServiceContainerInfo,
   name: string,
   jobContainer = false,
-  extension?: k8s.V1PodTemplateSpec
+  extension?: k8s.V1PodTemplateSpec,
+  authTokenSecretName?: string
 ): k8s.V1Container {
   if (!container.entryPoint && jobContainer) {
-    container.entryPoint = DEFAULT_CONTAINER_ENTRY_POINT
-    container.entryPointArgs = DEFAULT_CONTAINER_ENTRY_POINT_ARGS
+    if (process.env.RUNNER_HOOK_RCE_ENABLED === 'true') {
+      container.entryPoint = 'sh'
+      container.entryPointArgs = [`-c`, `exec /__e/rce-server -port 33333`]
+    } else {
+      container.entryPoint = DEFAULT_CONTAINER_ENTRY_POINT
+      container.entryPointArgs = DEFAULT_CONTAINER_ENTRY_POINT_ARGS
+    }
   }
 
   const podContainer = {
@@ -242,10 +259,22 @@ export function createContainerSpec(
   }
 
   if (container.entryPointArgs && container.entryPointArgs.length > 0) {
-    podContainer.args = fixArgs(container.entryPointArgs)
+    podContainer.args = container.entryPointArgs
   }
 
-  podContainer.env = []
+  podContainer.env = authTokenSecretName
+    ? [
+        {
+          name: 'RCE_AUTH_TOKEN',
+          valueFrom: {
+            secretKeyRef: {
+              name: authTokenSecretName,
+              key: 'rce-auth-token'
+            }
+          }
+        }
+      ]
+    : []
   for (const [key, value] of Object.entries(
     container['environmentVariables'] || {}
   )) {

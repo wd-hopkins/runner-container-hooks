@@ -1,8 +1,11 @@
+import * as core from '@actions/core'
 import * as k8s from '@kubernetes/client-node'
 import * as fs from 'fs'
 import { HookData } from 'hooklib/lib'
 import * as path from 'path'
 import { v4 as uuidv4 } from 'uuid'
+import net from 'node:net'
+import { namespace } from '../src/k8s'
 
 const kc = new k8s.KubeConfig()
 
@@ -162,4 +165,50 @@ export class TestHelper {
     runContainerStep.args.registry = null
     return runContainerStep
   }
+}
+
+export async function portForward(
+  serviceName: string,
+  localPort: number,
+  remotePort: number
+): Promise<net.Server> {
+  const serverUrl = `https://localhost:${localPort}`
+  const ns = namespace()
+  const forward = new k8s.PortForward(kc)
+  const server = net.createServer(async socket => {
+    try {
+      await forward.portForward(
+        ns,
+        serviceName,
+        [remotePort],
+        socket,
+        null,
+        socket
+      )
+    } catch (error) {
+      socket.destroy()
+      throw error
+    }
+  })
+
+  server.listen(localPort, 'localhost', () => {
+    core.info(`Port forward server listening on ${serverUrl}`)
+    core.info(`Forwarding to: ${ns}/${serviceName}:${remotePort}`)
+  })
+
+  server.on('error', error => {
+    core.error(`Server error: ${error}`)
+  })
+
+  process.on('SIGINT', () => {
+    core.info('\nShutting down port-forward server...')
+    server.close()
+    process.exit(0)
+  })
+
+  while (!server.listening) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+
+  return server
 }

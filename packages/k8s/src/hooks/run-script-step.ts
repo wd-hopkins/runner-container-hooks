@@ -2,15 +2,23 @@
 import * as fs from 'fs'
 import * as core from '@actions/core'
 import { RunScriptStepArgs } from 'hooklib'
-import { execCpFromPod, execCpToPod, execPodStep } from '../k8s'
+import { execCpFromPod, execCpToPod, execPodStep, namespace } from '../k8s'
 import { writeRunScript, sleep, listDirAllCommand } from '../k8s/utils'
 import { JOB_CONTAINER_NAME } from './constants'
 import { dirname } from 'path'
 import * as shlex from 'shlex'
+import {
+  ChannelCredentials,
+  createChannel,
+  createClientFactory,
+  Metadata
+} from 'nice-grpc'
+import { RCEAgentDefinition, STATE, Status } from '../rce/rce'
 
 export async function runScriptStep(
   args: RunScriptStepArgs,
-  state
+  state,
+  rpcServerUrl?: string
 ): Promise<void> {
   // Write the entrypoint first. This will be later coppied to the workflow pod
   const { entryPoint, entryPointArgs, environmentVariables } = args
@@ -75,11 +83,15 @@ export async function runScriptStep(
   args.entryPoint = 'sh'
   args.entryPointArgs = ['-e', containerPath]
   try {
-    await execPodStep(
-      [args.entryPoint, ...args.entryPointArgs],
-      state.jobPod,
-      JOB_CONTAINER_NAME
-    )
+    if (process.env.RUNNER_HOOK_RCE_ENABLED === 'true') {
+      await runEntrypointScriptOverRPC(args, state, rpcServerUrl)
+    } else {
+      await execPodStep(
+        [args.entryPoint, ...args.entryPointArgs],
+        state.jobPod,
+        JOB_CONTAINER_NAME
+      )
+    }
   } catch (err) {
     core.debug(`execPodStep failed: ${JSON.stringify(err)}`)
     const message = (err as any)?.response?.body?.message || err
@@ -103,5 +115,53 @@ export async function runScriptStep(
     )
   } catch (error) {
     core.warning('Failed to copy _temp from pod')
+  }
+}
+
+async function runEntrypointScriptOverRPC(
+  args: RunScriptStepArgs,
+  state,
+  rpcServerUrl?: string
+): Promise<void> {
+  if (!rpcServerUrl) {
+    rpcServerUrl = `svc-${state.jobPod}.${namespace()}.svc.cluster.local`
+  }
+
+  const channel = createChannel(
+    rpcServerUrl,
+    ChannelCredentials.createInsecure()
+  )
+
+  const authToken: string = state.authToken
+  const client = createClientFactory()
+    .use((call, options) =>
+      call.next(call.request, {
+        ...options,
+        metadata: Metadata(options.metadata).set(
+          'Authorization',
+          `Bearer ${authToken}`
+        )
+      })
+    )
+    .create(RCEAgentDefinition, channel)
+
+  let finalStatus: Status | undefined
+  for await (const status of client.exec({
+    Name: args.entryPoint,
+    Arguments: args.entryPointArgs
+  })) {
+    finalStatus = status
+    if (status.Stdout.length > 0) {
+      core.info(status.Stdout.join('\n').trim())
+    }
+    if (status.Stderr.length > 0) {
+      core.info(status.Stderr.join('\n').trim())
+    }
+  }
+
+  if (finalStatus?.State === STATE.FAIL) {
+    throw new Error(
+      `failed to run script step: command exited with error code: ${finalStatus.ExitCode}`
+    )
   }
 }

@@ -13,7 +13,8 @@
     "format-check": "prettier --check '**/*.ts'",
     "lint": "eslint packages/**/*.ts",
     "lint:fix": "eslint packages/**/*.ts --fix",
-    "build-all": "npm run build --prefix packages/hooklib && npm run build --prefix packages/k8s && npm run build --prefix packages/docker"
+    "build-all": "npm run build --prefix packages/hooklib && npm run build --prefix packages/k8s && npm run build --prefix packages/docker",
+    "generate": "npm run generate --prefix packages/k8s"
   },
   "repository": {
     "type": "git",

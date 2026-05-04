@@ -1,7 +1,8 @@
 import * as fs from 'fs'
 import { cleanupJob, prepareJob, runScriptStep } from '../src/hooks'
-import { TestHelper } from './test-setup'
+import { portForward, TestHelper } from './test-setup'
 import { PrepareJobArgs, RunScriptStepArgs } from 'hooklib'
+import * as net from 'node:net'
 
 jest.useRealTimers()
 
@@ -111,6 +112,58 @@ describe('Run script step', () => {
 
     await expect(
       runScriptStep(runScriptStepDefinition.args, prepareJobOutputData.state)
+    ).resolves.not.toThrow()
+  })
+})
+
+// Skipping until rce-server image is available in CI
+describe('Run script step with RCE', () => {
+  let portForwardServer: net.Server
+  const portForwardUrl = 'http://localhost:3334'
+
+  beforeEach(async () => {
+    process.env['RUNNER_HOOK_RCE_ENABLED'] = 'true'
+    testHelper = new TestHelper()
+    await testHelper.initialize()
+    const prepareJobOutputFilePath = testHelper.createFile(
+      'prepare-job-output.json'
+    )
+
+    const prepareJobData = testHelper.getPrepareJobDefinition()
+    runScriptStepDefinition = testHelper.getRunScriptStepDefinition() as {
+      args: RunScriptStepArgs
+    }
+
+    await prepareJob(
+      prepareJobData.args as PrepareJobArgs,
+      prepareJobOutputFilePath
+    )
+    const outputContent = fs.readFileSync(prepareJobOutputFilePath)
+    prepareJobOutputData = JSON.parse(outputContent.toString())
+
+    portForwardServer = await portForward(
+      prepareJobOutputData.state.jobPod,
+      3334,
+      33333
+    )
+  })
+
+  afterEach(async () => {
+    if (portForwardServer) {
+      portForwardServer.close()
+    }
+    await cleanupJob()
+    await testHelper.cleanup()
+    delete process.env['RUNNER_HOOK_RCE_ENABLED']
+  })
+
+  it('should not throw an exception', async () => {
+    await expect(
+      runScriptStep(
+        runScriptStepDefinition.args,
+        prepareJobOutputData.state,
+        portForwardUrl
+      )
     ).resolves.not.toThrow()
   })
 })
